@@ -20,7 +20,7 @@ COPY . /app
 
 # Install project
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+    uv sync --no-dev
 
 
 # Runtime stage
