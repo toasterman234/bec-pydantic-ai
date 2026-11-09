@@ -1,0 +1,52 @@
+# Backend development configuration
+# Usage: docker-compose up -d
+
+services:
+  app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: bec_pydantic_ai_backend:dev
+    container_name: bec_pydantic_ai_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app:/app/app:ro
+      - ./backend/cli:/app/cli:ro
+      - media_data:/app/media    env_file:
+      - ./backend/.env
+    environment:
+      - DEBUG=true
+      - ENVIRONMENT=local      - POSTGRES_HOST=db    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - backend    depends_on:      db:
+        condition: service_healthy    restart: unless-stopped    labels:
+      - "prometheus.scrape=true"
+      - "prometheus.port=8000"
+      - "prometheus.path=/metrics"
+  db:
+    image: postgres:16-alpine
+    container_name: bec_pydantic_ai_db
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-bec_pydantic_ai}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Port exposed only for local development - remove in production
+    ports:
+      - "5432:5432"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  media_data:  postgres_data:

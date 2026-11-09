@@ -1,0 +1,147 @@
+# Production configuration# with Traefik reverse proxy#
+# Usage:
+#   1. Fill backend/.env with real production secrets (cp backend/.env.example
+#      backend/.env if it doesn't exist yet). The same file is used for dev and
+#      prod — there is no separate .env.prod.
+#   2. Run: make prod   (or: docker compose --env-file backend/.env -f docker-compose.prod.yml up -d)#
+# Prerequisites:
+#   1. Configure backend/.env with DOMAIN and ACME_EMAIL
+#   2. Ensure ports 80 and 443 are available
+#   3. Generate passwords: openssl rand -base64 32
+services:  traefik:
+    image: traefik:v3.2
+    container_name: bec_pydantic_ai_traefik
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=traefik-public"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # Redirect HTTP to HTTPS
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      # Let's Encrypt
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-admin@example.com}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      # Access logs
+      - "--accesslog=true"
+      - "--accesslog.bufferingsize=100"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_letsencrypt:/letsencrypt
+    networks:
+      - traefik-public
+    labels:
+      # Dashboard
+      - "traefik.enable=true"
+      - "traefik.http.routers.bec_pydantic_ai-traefik.rule=Host(`traefik.${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.bec_pydantic_ai-traefik.entrypoints=websecure"
+      - "traefik.http.routers.bec_pydantic_ai-traefik.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.bec_pydantic_ai-traefik.service=api@internal"
+      - "traefik.http.routers.bec_pydantic_ai-traefik.middlewares=bec_pydantic_ai-auth"
+      - "traefik.http.middlewares.bec_pydantic_ai-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH:-admin:$$apr1$$xyz$$hash}"
+      # Security headers middleware
+      - "traefik.http.middlewares.bec_pydantic_ai-security-headers.headers.stsSeconds=31536000"
+      - "traefik.http.middlewares.bec_pydantic_ai-security-headers.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.bec_pydantic_ai-security-headers.headers.stsPreload=true"
+      - "traefik.http.middlewares.bec_pydantic_ai-security-headers.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.bec_pydantic_ai-security-headers.headers.browserXssFilter=true"
+      - "traefik.http.middlewares.bec_pydantic_ai-security-headers.headers.referrerPolicy=strict-origin-when-cross-origin"
+      - "traefik.http.middlewares.bec_pydantic_ai-security-headers.headers.frameDeny=true"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+  app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: bec_pydantic_ai_backend
+    volumes:
+      - media_data:/app/media    env_file:
+      - ./backend/.env
+    environment:
+      - DEBUG=false
+      - ENVIRONMENT=production      - POSTGRES_HOST=db    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4    networks:
+      - traefik-public
+      - backend-internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.bec_pydantic_ai-api.rule=Host(`api.${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.bec_pydantic_ai-api.entrypoints=websecure"
+      - "traefik.http.routers.bec_pydantic_ai-api.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.bec_pydantic_ai-api.middlewares=bec_pydantic_ai-security-headers@docker"
+      - "traefik.http.services.bec_pydantic_ai-api.loadbalancer.server.port=8000"
+      - "traefik.docker.network=traefik-public"    depends_on:      db:
+        condition: service_healthy    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+  db:
+    image: postgres:16-alpine
+    container_name: bec_pydantic_ai_db
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-bec_pydantic_ai}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # NO external ports - only accessible within backend-internal network
+    networks:
+      - backend-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: bec_pydantic_ai_frontend
+    environment:
+      - NODE_ENV=production
+      - BACKEND_URL=http://app:8000
+      - BACKEND_WS_URL=ws://app:8000    networks:
+      - traefik-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.bec_pydantic_ai-frontend.rule=Host(`${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.bec_pydantic_ai-frontend.entrypoints=websecure"
+      - "traefik.http.routers.bec_pydantic_ai-frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.bec_pydantic_ai-frontend.middlewares=bec_pydantic_ai-security-headers@docker"
+      - "traefik.http.services.bec_pydantic_ai-frontend.loadbalancer.server.port=3000"
+      - "traefik.docker.network=traefik-public"    depends_on:
+      - app
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+networks:  traefik-public:
+    driver: bridge  backend-internal:
+    driver: bridge
+    internal: true
+
+volumes:
+  media_data:  traefik_letsencrypt:  postgres_data:
