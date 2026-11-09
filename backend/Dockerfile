@@ -12,9 +12,8 @@ ENV UV_LINK_MODE=copy
 
 # Install dependencies
 RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --frozen --no-install-project --no-dev
+    uv sync --no-install-project --no-dev
 
 # Copy application
 COPY . /app
@@ -29,7 +28,9 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-WORKDIR /app# LiteParse needs the Node.js CLI. Pre-installing here avoids a 30-60s
+WORKDIR /app
+
+# LiteParse needs the Node.js CLI. Pre-installing here avoids a 30-60s
 # blocking npm install on the first parse request from a fresh container.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates gnupg \
